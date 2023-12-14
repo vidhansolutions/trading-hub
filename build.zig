@@ -2,56 +2,22 @@ const std = @import("std");
 
 
 pub fn build(b: *std.build.Builder) !void {
-   // _ = b.standardTargetOptions(.{});
-
-
-  //   var target = b.standardTargetOptions(.{});
-//     var optimize = b.standardOptimizeOption(.{});
-//     const RestLib = b.addSharedLibrary(.{
-//                 .name="RestAPI",
-//                 .root_source_file = std.Build.FileSource.relative("./Rest/API/types.zig"),
-//                 .target = target,
-//                 .optimize= optimize
-//             });
-
-
-// //    b.installArtifact(RestLib);
-//     var module = b.createModule(.{
-//         .source_file = std.Build.FileSource.relative("Rest/API/types.zig")
-//     });
-
-//  RestLib.addModule("Rest",module);
-//  b.installArtifact(RestLib);
-//             const main_tests = b.addTest(.{
-//                 .root_source_file = .{ .path = "Rest/API/Tests/types.zig" },
-//                 .target = target,
-//                 .optimize = optimize,
-//             });
-
-//     main_tests.addModule("Rest",module);
-//     const run_main_tests = b.addRunArtifact(main_tests);
-//             const test_step = b.step("test", "Run library tests");
-//             test_step.dependOn(&run_main_tests.step);
-
-    //try buildRestAPI(b,&target,&optimize);
-    //const RestAPI = b.step("RestAPI", "this will build REST API independently");
-    //const RestAPITest = b.step("runRestAPITest", "this will run test for Rest API");
-    //RestAPITest.dependOn();
-    //try modules(b, &target, &optimize);
-
-    try projectStructure(b);
+    try buildProject(b);
 }
 
-fn projectStructure(b: *std.build.Builder) !void {
 
 
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
+fn buildProject(b: *std.build.Builder) !void{
+    var target = b.standardTargetOptions(.{});
+    var optimize = b.standardOptimizeOption(.{});
 
-    var allocator = arena.allocator();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = gpa.allocator();
+    
+    // this will store the module name and the pointer to them for later build
+    var moduleList = std.StringHashMap(*std.Build.Module).init(allocator);
+    var testList = std.ArrayList([] const u8).init(allocator);
 
-    var map = std.StringHashMap(std.ArrayList([]const u8)).init(allocator);
-    defer map.deinit();
 
     var dir = try std.fs.cwd().openIterableDir(".", .{});
     defer dir.close();
@@ -59,72 +25,107 @@ fn projectStructure(b: *std.build.Builder) !void {
     var walker = try dir.walk(allocator);
 
     while(try walker.next()) |item|{
-        if(isValidPath(item.path)){
-            if(item.kind == std.fs.IterableDir.Entry.Kind.directory){
-                // we need to check if the directory is in the dictionary already
-                if (map.get(item.path) == null ){
-                    var list = std.ArrayList([]const u8).init(allocator);
-                    try map.put(item.path, list);
-                    std.debug.print("new directory: {s}\n",.{item.path});
-                    //std.debug.print("new list address: {*}\n",.{try list});
-                }
-                continue;
-                //std.debug.print("directory: {s}\n",.{item.path});
-            }
-            if (item.kind == std.fs.IterableDir.Entry.Kind.file){
-                const filePath = try removeFileFromPath(item.path,item.basename);
-                if (map.getPtr(filePath)) |fileList|{
-                    std.debug.print("new file added {s} to directory: {s}\n",.{item.basename,filePath});
-                    try fileList.append(try std.mem.Allocator.dupe(allocator, u8, item.basename));
-                    //try map.put(filePath,fileList.*);
-                    //printDirectoryFiles(filePath,map);
-                }
-               // std.debug.print("file: {s}\n",.{filePath});
-            }
-            //std.debug.print("{s}\n",.{item.path});
+        if(isValidPath(item.path) and item.kind == std.fs.IterableDir.Entry.Kind.file )
+        {
+            const path = try std.mem.Allocator.dupe(allocator, u8, item.path); 
+            var module = b.addModule(path,.{
+                .source_file = std.Build.FileSource.relative(path),
+            });
+            try moduleList.put(path,module);
+        }
+        // if it's a file and has Tests in it's path we store it in the list
+        if(item.kind == std.fs.IterableDir.Entry.Kind.file and 
+            std.mem.indexOf(u8, item.path,"Tests") != null){
+            std.debug.print("we have Tests folder\n",.{});
+            try testList.append(try std.mem.Allocator.dupe(allocator,u8,item.path));
         }
     }
-    //printProject(map);
-    try buildProject(b,&map);
-}
 
-fn buildProject(b: *std.build.Builder, project: *std.StringHashMap(std.ArrayList([]const u8))) !void {
+    var moduleListIter = moduleList.iterator();
+    while(moduleListIter.next()) |module|{
+        // get the dependencies for this module
+        var depList = try getModuleDep(module.key_ptr.*);
+        var moduleDepList = std.StringArrayHashMap(*std.Build.Module).init(allocator);
+        for(depList) |dep|{
+            std.debug.print("module {s} has import {s}\n",.{module.key_ptr.*,dep});
+           if(moduleList.getPtr(dep)) |mutModule|{
+                std.debug.print("{}\n",.{@TypeOf(mutModule)});
+               //try moduleDepList.put(module.key_ptr.*, mutModule.value_ptr.*.*);        
+           }else{
+               std.debug.print("moduleList is not contain dependecy: {s}\n",.{dep});
+           }
+        }
+        //std.debug.print("{}\n",.{@TypeOf(module.value_ptr.*.*.dependencies)});
+        module.value_ptr.*.dependencies = moduleDepList; 
+    }
+      
 
-    var target = b.standardTargetOptions(.{});
-    var optimize = b.standardOptimizeOption(.{});
-
-    var iter = project.*.iterator();
-    while (iter.next()) |pkg| {
-        // we should check if package has Test directory
-        const pkgName = pkg.key_ptr.*;
-        const pkgTest = try stringConcat(pkgName, "/Tests");
-        // we get the modules that have a test file in the Tests folder
-        if(project.get(pkgTest)) |modules| {
-            std.debug.print("we have Test Directory at: {s}\n",.{pkgTest});
-            // we have to check if the file with the same name is available in both directory
-            for (modules.items) |moduleName|{
-                std.debug.print("create module {s}\n",.{pkgName});
-                const module = b.createModule(.{
-                    .source_file = std.Build.FileSource.relative(try stringConcat(pkgName,
-                                                                                  try stringConcat("/",moduleName)))
-                });
-                std.debug.print("adding tests for {s}.\n",.{moduleName});
-                const testModule = b.addTest(.{
-                    .root_source_file = .{ .path = try stringConcat(pkgTest,
-                                                                    try stringConcat("/",moduleName)) },
+    _ = walker.deinit();
+    
+    var iter = moduleList.iterator();
+    while (iter.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+    }
+    for(testList.items) |testItem| {
+        std.debug.print("test path: {s}\n",.{testItem});
+        const testModule = b.addTest(.{
+                    .root_source_file = std.Build.FileSource.relative(testItem),
                     .target = target,
                     .optimize = optimize,
+                    .main_pkg_path = std.Build.FileSource.relative("./"), 
                 });
-                std.debug.print("adding module to the test for import purpose\n",.{});
-                testModule.addModule(pkgName,module);
-                const tests = b.addRunArtifact(testModule);
-                //_ = b.addInstallArtifact(tests, .{});
-                const test_step = b.step(try stringConcat(try stringConcat("run", moduleName), "Tests"), "Run library tests");
-                test_step.dependOn(&tests.step);
-                // add test to the default build process so don't need to call the specific test
-                std.debug.print("runing test for module {s}\n",.{moduleName});
-                b.default_step.dependOn(test_step);
+        const tests = b.addRunArtifact(testModule);
+        const test_step = b.step(try stringConcat(try stringConcat("run", testItem), "Tests"), "Run library tests");
+        test_step.dependOn(&tests.step);
+        b.default_step.dependOn(test_step);
+        allocator.free(testItem);
+    }
+    moduleList.deinit();
+    testList.deinit();
+    std.debug.print("allocator status: {}\n",.{ gpa.deinit()});
+}
+
+fn getModuleDep(path: [] const u8) 
+    ![][] const u8{
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = gpa.allocator();
+    std.debug.print("############################################\n",.{});
+    std.debug.print("path is: {s}\n",.{path});
+    const file = try std.fs.cwd().openFile(path, .{});
+    var buffer: [4096]u8 = undefined;
+    var bf = std.io.bufferedReader(file.reader());
+    var reader = bf.reader();
+    var depList = std.ArrayList([] const u8).init(allocator);
+    while (try reader.readUntilDelimiterOrEof(&buffer, '\n')) |line| {
+        const str_line = std.mem.trim(u8, line, " \t\n\r");
+        if (std.mem.startsWith(u8, str_line, "const") and std.mem.indexOf(u8, str_line, "@import") != null) {
+            
+            var depName = try getDependency(str_line);                                                                                     
+            if (!std.mem.eql(u8, depName, "")){
+                std.debug.print("Found import in file {s}: {s}\n", .{path,depName });
+                try depList.append(try std.mem.Allocator.dupe(allocator, u8, depName));
             }
+        }
+    }
+    file.close();
+    std.debug.print("length of dep list: {}\n",.{depList.items.len});
+    return depList.toOwnedSlice();
+}
+
+fn prepareAddModule (moduleList: *std.StringHashMap(*std.Build.Module), 
+    depList: [][]const u8) !void{
+
+    for(depList) |dep|{
+        // this means we don't have this module in our build system 
+        if(!moduleList.contains(dep)) {
+            // we need to get the dep list for this module
+            std.debug.print("================================\n",.{});
+            std.debug.print("dep path: {s}\n",.{dep});
+            std.debug.print("module name: {s}\n",.{getFileNameFromPath(dep)});
+            // add module and update the list of module 
+            //moduleList.put(dep,null);
+            var moduleDep = getModuleDep(dep,getFileNameFromPath(dep));
+            try prepareAddModule(&moduleList, moduleDep);    
         }
     }
 }
@@ -153,7 +154,7 @@ fn printDirectoryFiles(directory: [] const u8, map: std.StringHashMap(std.ArrayL
 }
 
 fn isValidPath(path: []const u8) bool {
-    var ignoreList = [_][] const u8 {"zig-cache", "zig-out", ".idea", ".git", "build.zig", ".md", "~"};
+    var ignoreList = [_][] const u8 { "Tests", "zig-cache", "zig-out", ".idea", ".git", "build.zig", ".md", "~"};
     for (ignoreList) |item|{
        // std.debug.print("{s}\n", .{item});
         if(std.mem.indexOf(u8,path,item) != null){
@@ -162,6 +163,29 @@ fn isValidPath(path: []const u8) bool {
         }
     }
     return true;
+}
+
+fn getFileNameFromPath(path: [] const u8) [] const u8 {
+
+    if (std.mem.lastIndexOf(u8,path,"/")) |index|{
+        return path[index+1..];
+    }
+    return "";
+}
+
+fn getDependency(import: []const u8) ![]const u8 {
+    
+    const ignoreModule = [_][] const u8 {"std"};
+    if (std.mem.indexOf(u8, import ,"\"")) |index| {
+        const moduleName = import[index+1..import.len-3];
+        for(ignoreModule) |module|{
+            if(std.mem.eql(u8, module,moduleName)){
+                return ""; 
+            }
+        }
+        return moduleName;
+    }
+    return error.CannotFindModuleName;
 }
 
 fn removeFileFromPath(path: []const u8, fileName: []const u8) ![]const u8 {

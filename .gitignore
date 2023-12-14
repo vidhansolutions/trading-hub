@@ -2,3 +2,8 @@
 SDK/
 # ignore Broker module
 Brokers/
+# ignore MarketDataRepo
+MarketDataRepo/
+# ignore zig-cache
+zig-cache/
+
